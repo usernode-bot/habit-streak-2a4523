@@ -1,4 +1,21 @@
 {
   "description": "Daily habit check-in with streak calendar and leaderboard.",
-  "secrets": []
+  "secrets": [],
+  "tests": [
+    {
+      "id": "habits.today",
+      "name": "Habit list and add form render",
+      "path": "/",
+      "expectSelector": "#habit-list",
+      "expectText": "Add habit",
+      "visual": true,
+      "impact": ["public/index.html", "server.js"]
+    },
+    {
+      "id": "leaderboard.seeded",
+      "name": "Leaderboard shows the seeded group members with streaks",
+      "path": "/",
+      "expectText": "staging-demo-priya"
+    }
+  ]
 }
