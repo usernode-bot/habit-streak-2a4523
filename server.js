@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const app = express();
 const port = process.env.PORT || 3000;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 
 // The platform signs user-identity tokens with an RSA private key it never
 // shares. Containers get only the PUBLIC half, so this app can verify who a
@@ -109,29 +110,180 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 // fresh load.
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-// Button press
-app.post('/api/press', async (req, res) => {
+// ---------------------------------------------------------------------------
+// Habit Streak
+// ---------------------------------------------------------------------------
+
+// Days are UTC calendar dates ('YYYY-MM-DD'). Everyone in one small group
+// shares the board, so one shared clock keeps streaks comparable.
+function dayStr(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+// Current streak: consecutive checked days ending today — or ending
+// yesterday when today isn't checked yet, so a streak never reads as broken
+// before the day is over.
+function currentStreak(days) {
+  let cursor = new Date();
+  if (!days.has(dayStr(cursor))) {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  let streak = 0;
+  while (days.has(dayStr(cursor))) {
+    streak++;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return streak;
+}
+
+// Serialize one habit row (with its day set) into the card shape the
+// frontend renders, including the last 30 days as dots.
+function habitCard(id, name, username, mine, days) {
+  const dots = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - i);
+    dots.push(days.has(dayStr(d)));
+  }
+  const streak = currentStreak(days);
+  return {
+    id,
+    name,
+    username,
+    mine,
+    streak,
+    doneToday: days.has(dayStr(new Date())),
+    days: dots,
+  };
+}
+
+// One request feeds the whole screen — habit cards plus the leaderboard —
+// so first paint needs a single round trip.
+app.get('/api/state', async (req, res) => {
   try {
-    await pool.query(`
-      INSERT INTO presses (user_id, username) VALUES ($1, $2)
-    `, [req.user.id, req.user.username]);
-    res.json({ ok: true });
+    const { rows } = await pool.query(`
+      SELECT h.id, h.name, h.user_id, h.username,
+             to_char(c.check_date, 'YYYY-MM-DD') AS day
+      FROM habits h
+      LEFT JOIN habit_checks c
+        ON c.habit_id = h.id
+       AND c.check_date >= CURRENT_DATE - 30
+      ORDER BY h.created_at, h.id
+    `);
+
+    const byHabit = new Map();
+    for (const row of rows) {
+      if (!byHabit.has(row.id)) {
+        byHabit.set(row.id, {
+          id: row.id,
+          name: row.name,
+          user_id: row.user_id,
+          username: row.username,
+          days: new Set(),
+        });
+      }
+      if (row.day) byHabit.get(row.id).days.add(row.day);
+    }
+
+    const habits = [];
+    const board = new Map(); // username -> { username, streak, habits }
+    for (const h of byHabit.values()) {
+      const mine = req.user && h.user_id === req.user.id;
+      if (mine) {
+        habits.push(habitCard(h.id, h.name, h.username, true, h.days));
+      }
+      const entry = board.get(h.username) || { username: h.username, streak: 0, habits: 0 };
+      entry.habits++;
+      entry.streak = Math.max(entry.streak, currentStreak(h.days));
+      board.set(h.username, entry);
+    }
+
+    const leaderboard = [...board.values()]
+      .sort((a, b) => b.streak - a.streak || a.username.localeCompare(b.username))
+      .slice(0, 50)
+      .map(({ username, streak, habits: n }, i) => ({
+        rank: i + 1,
+        username,
+        streak,
+        habits: n,
+        me: !!(req.user && req.user.username === username),
+      }));
+
+    res.json({ habits, leaderboard, today: dayStr(new Date()) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Leaderboard
-app.get('/api/leaderboard', async (_req, res) => {
+// Add a habit. Names need at least 3 characters (the same rule the
+// frontend enforces — the server is the authority).
+app.post('/api/habits', async (req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT username, COUNT(*) as presses
-      FROM presses
-      GROUP BY username
-      ORDER BY presses DESC
-      LIMIT 50
-    `);
-    res.json({ leaderboard: rows });
+    const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+    if (name.length < 3) {
+      return res.status(400).json({ error: 'Habit name needs at least 3 characters.' });
+    }
+    if (name.length > 60) {
+      return res.status(400).json({ error: 'Habit name can be at most 60 characters.' });
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO habits (user_id, username, name) VALUES ($1, $2, $3)
+       RETURNING id, name`,
+      [req.user.id, req.user.username, name]
+    );
+    res.json({ habit: habitCard(rows[0].id, rows[0].name, req.user.username, true, new Set()) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Check in / un-check for today. One row per habit per day (the primary
+// key on habit_checks makes the insert idempotent).
+app.post('/api/habits/:id/toggle', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const owned = await pool.query(
+      'SELECT name FROM habits WHERE id = $1 AND user_id = $2',
+      [id, req.user.id]
+    );
+    if (!owned.rows.length) {
+      return res.status(404).json({ error: 'Habit not found.' });
+    }
+    const removed = await pool.query(
+      'DELETE FROM habit_checks WHERE habit_id = $1 AND check_date = CURRENT_DATE',
+      [id]
+    );
+    if (removed.rowCount === 0) {
+      await pool.query(
+        `INSERT INTO habit_checks (habit_id, check_date)
+         VALUES ($1, CURRENT_DATE) ON CONFLICT DO NOTHING`,
+        [id]
+      );
+    }
+    const { rows } = await pool.query(
+      `SELECT to_char(check_date, 'YYYY-MM-DD') AS day
+       FROM habit_checks WHERE habit_id = $1 AND check_date >= CURRENT_DATE - 30`,
+      [id]
+    );
+    const days = new Set(rows.map((r) => r.day));
+    res.json({ habit: habitCard(id, owned.rows[0].name, req.user.username, true, days) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a habit and its history.
+app.delete('/api/habits/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const deleted = await pool.query(
+      'DELETE FROM habits WHERE id = $1 AND user_id = $2',
+      [id, req.user.id]
+    );
+    if (!deleted.rowCount) {
+      return res.status(404).json({ error: 'Habit not found.' });
+    }
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -174,18 +326,116 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-async function start() {
+async function migrate() {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS presses (
+    CREATE TABLE IF NOT EXISTS habits (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL,
       username VARCHAR(255) NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
+      name VARCHAR(120) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS habit_checks (
+      habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+      check_date DATE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (habit_id, check_date)
+    )
+  `);
+  // The starter template's demo table; the real app replaced it.
+  await pool.query('DROP TABLE IF EXISTS presses');
+}
+
+// Staging starts from an empty (or prod-copied) database, so seed a few
+// obviously fake group members to make the leaderboard and streak dots
+// reviewable. Fake identities only — never rows owned by whoever opens
+// the preview. Re-runs on every staging boot, hence the existence check.
+async function seedStaging() {
+  const exists = await pool.query(
+    `SELECT 1 FROM habits WHERE username = 'staging-demo-priya' LIMIT 1`
+  );
+  if (exists.rows.length) return;
+
+  // username -> [{ name, checked: [day offsets before today] }]
+  const demo = [
+    ['staging-demo-priya', [
+      ['Drink water', [0, 1, 2, 3]],
+      ['Read 20 pages', [0]],
+    ]],
+    ['staging-demo-maya', [
+      ['Morning run', [0, 1, 2]],
+      ['Meditate', [0]],
+    ]],
+    ['staging-demo-leo', [
+      ['Morning run', [0, 1]],
+      ['Journal', [3]],
+    ]],
+  ];
+
+  // One transaction: the existence check above stays honest even if a
+  // boot dies mid-seed, so the next boot can retry cleanly.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const [username, habits] of demo) {
+      for (const [name, checked] of habits) {
+        const { rows } = await client.query(
+          `INSERT INTO habits (user_id, username, name) VALUES (0, $1, $2) RETURNING id`,
+          [username, name]
+        );
+        for (const offset of checked) {
+          await client.query(
+            `INSERT INTO habit_checks (habit_id, check_date)
+             VALUES ($1, CURRENT_DATE - $2::int) ON CONFLICT DO NOTHING`,
+            [rows[0].id, offset]
+          );
+        }
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function start() {
+  await migrate();
+  if (IS_STAGING) {
+    try {
+      await seedStaging();
+    } catch (err) {
+      console.warn('staging seed failed: ' + err.message);
+    }
+  }
   const server = app.listen(port, () => console.log(`Listening on :${port}`));
   // Let Envoy retire idle upstream connections at 60s, with a 15s margin.
   server.keepAliveTimeout = 75_000;
+
+  // The container is stopped and replaced on every deploy. Stop accepting
+  // connections, let in-flight requests finish, close the pool, exit.
+  let shuttingDown = false;
+  async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[shutdown] ${signal} received, draining`);
+    server.close(() => {});
+    server.closeIdleConnections?.();
+    const t = setTimeout(() => server.closeAllConnections?.(), 3000);
+    t.unref?.();
+    try {
+      await pool.end();
+    } catch (err) {
+      console.error('[shutdown] pool.end failed', err.message);
+    }
+    process.exit(0);
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start().catch(err => { console.error(err); process.exit(1); });

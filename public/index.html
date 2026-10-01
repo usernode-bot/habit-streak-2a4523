@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  
+
   <script>
   // usernode-dev-console@1
   (function () {
@@ -26,8 +26,8 @@
             if (seen.has(val)) return '[Circular]';
             seen.add(val);
           }
-          if (typeof val === 'function') return '[Function ' + (val.name || 'anonymous') + ']';
-          if (val instanceof Error) return val.stack || (val.name + ': ' + val.message);
+          if (typeof val === 'function') return '[Function ' + (v.name || 'anonymous') + ']';
+          if (val instanceof Error) return val.stack || val.message;
           return val;
         });
       } catch (e) { try { return String(v); } catch (_) { return '[unserializable]'; } }
@@ -65,130 +65,305 @@
   </script>
   <title>Habit Streak</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%237c3aed'/><circle cx='50' cy='50' r='18' fill='white'/></svg>">
-  <!-- Tailwind, PRECOMPILED for this app (was cdn.tailwindcss.com's
-       in-browser engine plus an inline tailwind.config here). The config
-       moved to tailwind.config.js in the repo root; npm run build compiles
-       it to public/tailwind.css with Docker or Paketo on every image build, so the
-       stylesheet is regenerated from THIS commit's markup every deploy and
-       can never drift behind the code. ~7 KB of CSS instead of a ~400 KB
-       engine, and no flash of unstyled content.
-       Writing class names as whole literals is what keeps this working — a
-       class assembled from fragments at runtime (e.g. "bg-" + tone + "-500")
-       is invisible to the compiler. If you genuinely need runtime-generated
-       classes, swap this link for the platform-hosted engine instead:
-       <script src="/usernode-tailwind/v1/tailwind.js"></script> -->
+  <!-- Tailwind, PRECOMPILED for this app. npm run build compiles
+       tailwind.config.js + styles/tailwind-input.css to public/tailwind.css
+       on every image build, so the stylesheet is regenerated from THIS
+       commit's markup and can never drift behind the code. Class names are
+       written as whole literals (including the ones inside the script below)
+       so the compiler's extractor sees them. -->
   <link rel="stylesheet" href="/tailwind.css">
-  <!-- The platform bridge, centrally hosted and loaded by RELATIVE path (the
-       handler in server.js serves it under a plain "node server.js"; the
-       platform's edge answers it everywhere else). Never vendor it and never
-       write a hostname in front of it.
-       It is NOT conditional on this app calling a bridge API: it is also how
-       the app ANSWERS the shell, so a scaffold without it is invisible to
-       anything that asks the frame a question. Offline launch is one of those.
-       Another is the page's colour: the bridge reports this document's opaque
-       ground to the shell (#1581), which is what makes the platform bar above
-       the app take the app's tone instead of the viewer's theme (#1945). This
-       scaffold paints a dark page (bg-zinc-950 on the body element), so
-       without this tag a brand-new app sits under a light bar. -->
+  <!-- The platform bridge, centrally hosted and loaded by RELATIVE path.
+       Never vendor it and never write a hostname in front of it. -->
   <script src="/usernode-bridge/v1/bridge.js"></script>
+  <script>
+    // Theme: the platform's resolved choice wins (it cannot be seen through
+    // prefers-color-scheme inside the frame); the OS preference is the
+    // standalone fallback. Toggles Tailwind's `dark:` variants via the class
+    // strategy (darkMode: 'class' in tailwind.config.js).
+    (function () {
+      var media = window.matchMedia('(prefers-color-scheme: dark)');
+      function applyTheme() {
+        var theme = (window.usernode && window.usernode.theme)
+          || (media.matches ? 'dark' : 'light');
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+        document.documentElement.style.colorScheme = theme;
+      }
+      applyTheme();
+      window.addEventListener('usernode:theme-changed', applyTheme);
+      media.addEventListener('change', applyTheme);
+    })();
+  </script>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen">
-  <main class="max-w-md mx-auto px-4 py-10 flex flex-col gap-6">
+<body class="bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 min-h-screen transition-colors">
+  <main class="max-w-md mx-auto px-4 pt-8 pb-16 flex flex-col gap-6">
 
-    <!-- usernode-starter-notice@1 — starter-template messaging. When building
-         the user's real app, replace this whole screen and delete this block,
-         both sentinel comments included. -->
-    <section class="rounded-2xl border border-violet-500/30 bg-gradient-to-b from-violet-600/20 to-transparent p-6 text-center flex flex-col items-center gap-3">
-      <span class="inline-block rounded-full bg-violet-600/20 text-violet-300 text-xs font-semibold uppercase tracking-wide px-3 py-1">Starter template</span>
-      <h1 class="text-2xl font-bold">Habit Streak</h1>
-      <p class="text-sm text-zinc-300 leading-relaxed">Welcome to your new app! Everything on this screen is placeholder content that came with it.</p>
-      <p class="text-sm text-zinc-300 leading-relaxed">Tap the <strong class="text-violet-300 font-semibold">Homeroom icon</strong> in the header and choose <strong class="text-violet-300 font-semibold">Start a new change</strong> to start building your app. Describe what you'd like in plain English, and it will be turned into your real app.</p>
+    <header class="flex flex-col gap-1">
+      <h1 class="text-2xl font-bold tracking-tight">Habit Streak</h1>
+      <p id="today-line" class="text-sm text-zinc-500 dark:text-zinc-400"></p>
+    </header>
+
+    <section aria-label="Add a habit">
+      <form id="add-form" class="flex gap-2">
+        <input id="habit-name" type="text" maxlength="60" autocomplete="off"
+          placeholder="New habit name"
+          class="flex-1 min-w-0 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-4 py-3 text-sm placeholder-zinc-400 dark:placeholder-zinc-500 outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors">
+        <button type="submit"
+          class="rounded-xl bg-violet-600 text-white px-5 py-3 text-sm font-semibold hover:bg-violet-500 active:scale-95 transition">
+          Add habit
+        </button>
+      </form>
+      <p id="add-error" class="hidden mt-2 text-sm text-red-500"></p>
     </section>
 
-    <section>
-      <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">What's already working</h2>
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 divide-y divide-zinc-800">
-        <div class="flex items-start gap-3 p-4">
-          <svg class="w-5 h-5 text-violet-400 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7 7a1 1 0 0 1-1.4 0l-3-3a1 1 0 1 1 1.4-1.4L9 11.6l6.3-6.3a1 1 0 0 1 1.4 0Z" clip-rule="evenodd"/></svg>
-          <div>
-            <p class="text-sm font-semibold text-zinc-100">Sign-in</p>
-            <p class="text-sm text-zinc-400">You're signed in through Homeroom automatically — no accounts to build.</p>
-          </div>
-        </div>
-        <div class="flex items-start gap-3 p-4">
-          <svg class="w-5 h-5 text-violet-400 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7 7a1 1 0 0 1-1.4 0l-3-3a1 1 0 1 1 1.4-1.4L9 11.6l6.3-6.3a1 1 0 0 1 1.4 0Z" clip-rule="evenodd"/></svg>
-          <div>
-            <p class="text-sm font-semibold text-zinc-100">Database</p>
-            <p class="text-sm text-zinc-400">Your app has its own private database, ready to store things.</p>
-          </div>
-        </div>
-        <div class="flex items-start gap-3 p-4">
-          <svg class="w-5 h-5 text-violet-400 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7 7a1 1 0 0 1-1.4 0l-3-3a1 1 0 1 1 1.4-1.4L9 11.6l6.3-6.3a1 1 0 0 1 1.4 0Z" clip-rule="evenodd"/></svg>
-          <div>
-            <p class="text-sm font-semibold text-zinc-100">Live API</p>
-            <p class="text-sm text-zinc-400">The example below talks to a real server — try it.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-    <!-- /usernode-starter-notice@1 -->
-
-    <section class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 flex flex-col items-center gap-5">
-      <div class="w-full flex items-baseline justify-between gap-2">
-        <h2 class="text-sm font-medium text-zinc-500">Try the example</h2>
-        <span class="text-xs text-zinc-600">This example will be replaced</span>
-      </div>
-
-      <button id="press-btn" class="w-32 h-32 rounded-full bg-violet-600 hover:bg-violet-500 active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-violet-600/30">
-        Press!
-      </button>
-
-      <div id="count" class="text-lg text-zinc-400">0 total presses</div>
-
-      <div class="w-full max-w-sm">
-        <h3 class="text-sm font-medium text-zinc-500 mb-2 text-center">Leaderboard</h3>
-        <div id="leaderboard" class="space-y-1"></div>
-      </div>
+    <section aria-label="Today's habits">
+      <h2 class="text-sm font-medium text-zinc-500 dark:text-zinc-400 mb-2 px-1">Today</h2>
+      <div id="status-line" class="hidden px-1 text-sm text-zinc-500 dark:text-zinc-400"></div>
+      <div id="habit-list" class="flex flex-col gap-3"></div>
+      <p id="habits-empty" class="hidden px-1 py-6 text-sm text-zinc-500 dark:text-zinc-400">
+        No habits yet. Add your first one above.
+      </p>
     </section>
 
-    <p class="text-center text-xs text-zinc-600">Built on Homeroom — this template screen disappears once you build your real app.</p>
+    <section aria-label="Leaderboard">
+      <h2 class="text-sm font-medium text-zinc-500 dark:text-zinc-400 mb-2 px-1">Leaderboard</h2>
+      <div id="leaderboard"
+        class="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 divide-y divide-zinc-100 dark:divide-zinc-800 overflow-hidden"></div>
+      <p id="board-empty" class="hidden px-1 py-6 text-sm text-zinc-500 dark:text-zinc-400">
+        No one has started a habit yet.
+      </p>
+    </section>
+
   </main>
 
   <script>
     const params = new URLSearchParams(window.location.search);
-    const token = params.get('token') || '';
+    // Identity comes from the shell's ?token= on the iframe load. Remember
+    // the last real one: an offline (or standalone) reload carries no token
+    // — the shell can't mint one without a network — so recover it from the
+    // previous load instead of forgetting who the user is.
+    const urlToken = params.get('token') || '';
+    if (urlToken) {
+      try { localStorage.setItem('habit-streak-token', urlToken); } catch {}
+    }
+    let token = urlToken;
+    if (!token) {
+      try { token = localStorage.getItem('habit-streak-token') || ''; } catch {}
+    }
     const headers = token ? { 'x-usernode-token': token } : {};
 
-    async function loadLeaderboard() {
-      const res = await fetch('/api/leaderboard', { headers });
-      if (!res.ok) return;
-      const { leaderboard } = await res.json();
-      const el = document.getElementById('leaderboard');
-      if (!leaderboard.length) {
-        el.innerHTML = '<p class="text-center text-zinc-600 text-sm">No presses yet</p>';
-        return;
-      }
-      el.innerHTML = leaderboard.map((r, i) =>
-        '<div class="flex justify-between px-3 py-1 rounded ' + (i === 0 ? 'bg-violet-600/20 text-violet-300' : 'text-zinc-400') + '">' +
-        '<span>' + (i + 1) + '. ' + r.username + '</span>' +
-        '<span class="font-mono">' + r.presses + '</span></div>'
-      ).join('');
-      const total = leaderboard.reduce((s, r) => s + parseInt(r.presses), 0);
-      document.getElementById('count').textContent = total + ' total presses';
+    const FLAME_SVG = '<svg class="w-3.5 h-3.5 text-violet-500 dark:text-violet-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>';
+    const CHECK_SVG = '<svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+    const TRASH_SVG = '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+
+    let state = { habits: [], leaderboard: [] };
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
     }
 
-    document.getElementById('press-btn').addEventListener('click', async () => {
+    function streakLabel(streak) {
+      if (streak === 1) return '1 day streak';
+      if (streak > 1) return streak + ' day streak';
+      return 'No streak yet';
+    }
+
+    function habitCardHtml(h) {
+      const done = h.doneToday;
+      const dots = h.days.map((filled, i) => {
+        const isToday = i === h.days.length - 1;
+        let cls = filled
+          ? 'w-1.5 h-1.5 rounded-full bg-violet-500'
+          : 'w-1.5 h-1.5 rounded-full bg-zinc-200 dark:bg-zinc-800';
+        if (isToday && !filled) {
+          cls = 'w-1.5 h-1.5 rounded-full border border-zinc-300 dark:border-zinc-600';
+        }
+        return '<span class="' + cls + '"></span>';
+      }).join('');
+
+      const checkBtn =
+        '<button type="button" data-action="toggle" data-id="' + h.id + '" aria-pressed="' + done + '"' +
+        ' aria-label="' + (done ? 'Uncheck for today' : 'Check in for today') + '"' +
+        ' class="shrink-0 w-12 h-12 rounded-full flex items-center justify-center active:scale-90 transition ' +
+        (done
+          ? 'bg-violet-600 text-white'
+          : 'border border-zinc-300 dark:border-zinc-700 text-zinc-400 dark:text-zinc-500 hover:border-violet-500 hover:text-violet-500') +
+        '">' + CHECK_SVG + '</button>';
+
+      return (
+        '<article class="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 flex flex-col gap-3">' +
+          '<div class="flex items-center gap-2">' +
+            '<div class="flex-1 min-w-0">' +
+              '<p class="font-semibold truncate">' + escapeHtml(h.name) + '</p>' +
+              '<p class="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">' +
+                FLAME_SVG + '<span>' + streakLabel(h.streak) + '</span>' +
+              '</p>' +
+            '</div>' +
+            '<button type="button" data-action="delete" data-id="' + h.id + '"' +
+              ' class="shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-zinc-300 dark:text-zinc-600 hover:text-red-500 active:scale-90 transition" aria-label="Delete habit">' +
+              TRASH_SVG +
+            '</button>' +
+            checkBtn +
+          '</div>' +
+          '<div class="flex justify-between" aria-hidden="true">' + dots + '</div>' +
+        '</article>'
+      );
+    }
+
+    function boardRowHtml(r) {
+      const streakText = r.streak === 1 ? '1 day' : r.streak + ' days';
+      const habitText = r.habits === 1 ? '1 habit' : r.habits + ' habits';
+      return (
+        '<div class="flex items-center gap-3 px-4 py-3' + (r.me ? ' bg-violet-50 dark:bg-violet-500/10' : '') + '">' +
+          '<span class="w-5 text-sm font-mono text-zinc-400 dark:text-zinc-500">' + r.rank + '</span>' +
+          '<div class="flex-1 min-w-0">' +
+            '<p class="text-sm font-semibold truncate">' + escapeHtml(r.username) +
+              (r.me ? ' <span class="text-xs font-medium text-violet-600 dark:text-violet-400">(you)</span>' : '') +
+            '</p>' +
+            '<p class="text-xs text-zinc-500 dark:text-zinc-400">' + habitText + '</p>' +
+          '</div>' +
+          '<span class="flex items-center gap-1.5 text-sm font-semibold text-violet-600 dark:text-violet-400">' +
+            FLAME_SVG + streakText +
+          '</span>' +
+        '</div>'
+      );
+    }
+
+    function render() {
+      const list = document.getElementById('habit-list');
+      const empty = document.getElementById('habits-empty');
+      const board = document.getElementById('leaderboard');
+      const boardEmpty = document.getElementById('board-empty');
+
+      list.innerHTML = state.habits.map(habitCardHtml).join('');
+      empty.classList.toggle('hidden', state.habits.length > 0);
+
+      board.innerHTML = state.leaderboard.map(boardRowHtml).join('');
+      boardEmpty.classList.toggle('hidden', state.leaderboard.length > 0);
+    }
+
+    function setStatus(msg) {
+      const el = document.getElementById('status-line');
+      if (msg) {
+        el.textContent = msg;
+        el.classList.remove('hidden');
+      } else {
+        el.classList.add('hidden');
+      }
+    }
+
+    async function loadState() {
+      if (!token) {
+        // No token in this load and none remembered: nothing to authorize
+        // with, so don't fire a request that can only fail.
+        setStatus('Sign in through Homeroom to track your habits.');
+        return;
+      }
       try {
-        const res = await fetch('/api/press', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
-        });
-        if (res.ok) loadLeaderboard();
-        else if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
-      } catch {}
+        const res = await fetch('/api/state', { headers });
+        if (res.status === 401) {
+          setStatus('Sign in through Homeroom to track your habits.');
+          return;
+        }
+        if (!res.ok) {
+          setStatus('Could not load habits. Try refreshing.');
+          return;
+        }
+        state = await res.json();
+        setStatus('');
+        render();
+      } catch {
+        setStatus('Could not load habits. Check your connection.');
+      }
+    }
+
+    document.getElementById('habit-list').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const id = parseInt(btn.dataset.id, 10);
+      const habit = state.habits.find((h) => h.id === id);
+      if (!habit) return;
+
+      if (btn.dataset.action === 'toggle') {
+        btn.disabled = true;
+        try {
+          const res = await fetch('/api/habits/' + id + '/toggle', {
+            method: 'POST', headers,
+          });
+          if (res.ok) {
+            const { habit: updated } = await res.json();
+            state.habits = state.habits.map((h) => (h.id === id ? updated : h));
+            loadState(); // refresh the leaderboard in the background
+          } else {
+            setStatus('Could not save the check-in. Try again.');
+          }
+        } catch {
+          setStatus('Could not save the check-in. Try again.');
+        }
+        btn.disabled = false;
+        render();
+      }
+
+      if (btn.dataset.action === 'delete') {
+        if (!window.confirm('Delete "' + habit.name + '" and its history?')) return;
+        try {
+          const res = await fetch('/api/habits/' + id, { method: 'DELETE', headers });
+          if (res.ok) {
+            state.habits = state.habits.filter((h) => h.id !== id);
+            render();
+            loadState();
+          }
+        } catch {}
+      }
     });
 
-    loadLeaderboard();
+    document.getElementById('add-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('habit-name');
+      const error = document.getElementById('add-error');
+      const name = input.value.trim();
+
+      const showError = (msg) => {
+        error.textContent = msg;
+        error.classList.remove('hidden');
+      };
+
+      if (name.length < 3) {
+        showError('Habit name needs at least 3 characters.');
+        input.focus();
+        return;
+      }
+      error.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/habits', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ name }),
+        });
+        if (res.status === 400) {
+          const { error: serverError } = await res.json();
+          showError(serverError || 'That name is not valid.');
+          return;
+        }
+        if (!res.ok) {
+          showError('Could not add the habit. Try again.');
+          return;
+        }
+        input.value = '';
+        loadState();
+      } catch {
+        showError('Could not add the habit. Try again.');
+      }
+    });
+
+    document.getElementById('today-line').textContent =
+      new Date().toLocaleDateString(undefined, {
+        weekday: 'long', month: 'long', day: 'numeric',
+      });
+
+    loadState();
   </script>
 </body>
 </html>

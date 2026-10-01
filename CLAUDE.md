@@ -88,13 +88,17 @@ tables you've marked private), etc.
 
 ## About Habit Streak
 
-Daily habit check-in with streak calendar and leaderboard.
-
-_(add a sentence or two more of product context here so Claude Code has a
-shared understanding of what this app is for)_
+Daily habit check-in with streak calendar and leaderboard. Each user
+keeps their own habit list; everyone using the app is one group whose
+members are ranked on the leaderboard by their longest current streak.
+Designed mobile-first for one-handed use.
 
 ## App-specific conventions
 
-_(optional — e.g. "all currency values stored as integer cents, not
-floats"; "the `posts` table is append-only"; "avoid adding new
-dependencies"; etc.)_
+- Streak days are **UTC calendar dates** (`habit_checks.check_date` is
+  a DATE; the current streak is a walk back through consecutive dates,
+  ending yesterday when today isn't checked in yet).
+- The frontend renders everything from a single `GET /api/state`
+  response (habit cards + leaderboard in one round trip).
+- Staging seeds fake demo members (`staging-demo-*` usernames) at boot;
+  never seed rows owned by a real visitor.
