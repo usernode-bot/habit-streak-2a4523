@@ -1,5 +1,6 @@
 {
   "description": "Daily habit check-in with streak calendar and leaderboard.",
+  "icon": { "emoji": "🔥" },
   "secrets": [],
   "tests": [
     {
